@@ -1,0 +1,11 @@
+resources:
+  - configmap.yaml
+  - secrets.yaml
+  - customer-db.yaml
+  - product-db.yaml
+  - order-db.yaml
+  - customer-service.yaml
+  - product-service.yaml
+  - order-service.yaml
+  - rabbitmq.yaml
+  - frontend.yaml

@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  labels:
+    app: order-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      containers:
+        - name: order-service
+          image: sit722aklocalacr.azurecr.io/order_service:latest
+          ports:
+            - containerPort: 8001
+          env:
+            # DB config
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: ORDER_DB_HOST
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: ORDER_DB_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: global-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: global-secrets
+                  key: POSTGRES_PASSWORD
+
+            # RabbitMQ config
+            - name: RABBITMQ_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: RABBITMQ_HOST
+            - name: RABBITMQ_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: RABBITMQ_PORT
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: global-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: global-secrets
+                  key: RABBITMQ_PASS
+
+            # Customer service URL (internal)
+            - name: CUSTOMER_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: CUSTOMER_SERVICE_URL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  labels:
+    app: order-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: order-service
+  ports:
+    - port: 8001
+      targetPort: 8000

@@ -209,3 +209,10 @@ marimo/_lsp/
 __marimo__/
 
 .idea
+
+terraform/.terraform
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/.terraform.lock.hcl
+/terraform/environments/local.tfvars
+/k8s/base/secrets.yaml

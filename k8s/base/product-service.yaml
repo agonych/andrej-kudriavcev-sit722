@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-service
+  labels:
+    app: product-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: product-service
+  template:
+    metadata:
+      labels:
+        app: product-service
+    spec:
+      containers:
+        - name: product-service
+          image: sit722aklocalacr.azurecr.io/product_service:latest
+          ports:
+            - containerPort: 8000
+          env:
+            # DB config
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: PRODUCT_DB_HOST
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: PRODUCT_DB_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: global-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: global-secrets
+                  key: POSTGRES_PASSWORD
+
+            # RabbitMQ config
+            - name: RABBITMQ_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: RABBITMQ_HOST
+            - name: RABBITMQ_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: RABBITMQ_PORT
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: global-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: global-secrets
+                  key: RABBITMQ_PASS
+
+            # Azure storage config
+            - name: AZURE_STORAGE_ACCOUNT_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: global-secrets
+                  key: AZURE_STORAGE_ACCOUNT_NAME
+            - name: AZURE_STORAGE_ACCOUNT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: global-secrets
+                  key: AZURE_STORAGE_ACCOUNT_KEY
+            - name: AZURE_STORAGE_CONTAINER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: AZURE_STORAGE_CONTAINER_NAME
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-service
+  labels:
+    app: product-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: product-service
+  ports:
+    - port: 8000
+      targetPort: 8000

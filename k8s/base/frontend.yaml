@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: sit722aklocalacr.azurecr.io/frontend:latest
+          ports:
+            - containerPort: 80
+          env:
+            - name: PRODUCT_API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: PRODUCT_SERVICE_PUBLIC_URL
+            - name: ORDER_API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: ORDER_SERVICE_PUBLIC_URL
+            - name: CUSTOMER_API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: global-config
+                  key: CUSTOMER_SERVICE_PUBLIC_URL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 80
+  type: LoadBalancer   # expose frontend externally
