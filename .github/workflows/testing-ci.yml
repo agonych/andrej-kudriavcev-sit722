@@ -370,8 +370,63 @@ jobs:
           kustomize edit set image customer_service=$ACR_SERVER/customer_service:$IMAGE_TAG
           kustomize edit set image frontend=$ACR_SERVER/frontend:$IMAGE_TAG
 
+      - name: Create Kubernetes secrets
+        run: |
+          kubectl create secret generic global-secrets \
+            --from-literal=POSTGRES_USER=postgres \
+            --from-literal=POSTGRES_PASSWORD=postgres \
+            --from-literal=RABBITMQ_USER=guest \
+            --from-literal=RABBITMQ_PASS=guest \
+            --from-literal=AZURE_STORAGE_ACCOUNT_NAME=${{ needs.terraform_apply.outputs.storage_account_name }} \
+            --from-literal=AZURE_STORAGE_ACCOUNT_KEY=${{ needs.terraform_apply.outputs.storage_account_key }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Deploy with Kustomize
         run: kubectl apply -k k8s/overlays/staging
 
+      - name: Wait for external IPs
+        run: |
+          echo "Waiting for product-service external IP..."
+          for i in {1..30}; do
+            ip=$(kubectl get svc product-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$ip" ]; then echo "Found IP: $ip"; echo "PRODUCT_IP=$ip" >> $GITHUB_ENV; break; fi
+            sleep 10
+          done
+
+          echo "Waiting for order-service external IP..."
+          for i in {1..30}; do
+            ip=$(kubectl get svc order-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$ip" ]; then echo "Found IP: $ip"; echo "ORDER_IP=$ip" >> $GITHUB_ENV; break; fi
+            sleep 10
+          done
+
+          echo "Waiting for customer-service external IP..."
+          for i in {1..30}; do
+            ip=$(kubectl get svc customer-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$ip" ]; then echo "Found IP: $ip"; echo "CUSTOMER_IP=$ip" >> $GITHUB_ENV; break; fi
+            sleep 10
+          done
+
+      - name: Update frontend configmap
+        run: |
+          kubectl create configmap global-config \
+            --from-literal=PRODUCT_SERVICE_PUBLIC_URL=http://$PRODUCT_IP:8000 \
+            --from-literal=ORDER_SERVICE_PUBLIC_URL=http://$ORDER_IP:8001 \
+            --from-literal=CUSTOMER_SERVICE_PUBLIC_URL=http://$CUSTOMER_IP:8002 \
+            --from-literal=RABBITMQ_HOST=rabbitmq \
+            --from-literal=RABBITMQ_PORT=5672 \
+            --from-literal=PRODUCT_DB_HOST=product-db \
+            --from-literal=PRODUCT_DB_NAME=products \
+            --from-literal=CUSTOMER_DB_HOST=customer-db \
+            --from-literal=CUSTOMER_DB_NAME=customers \
+            --from-literal=ORDER_DB_HOST=order-db \
+            --from-literal=ORDER_DB_NAME=orders \
+            --from-literal=AZURE_STORAGE_CONTAINER_NAME=images \
+            --from-literal=AZURE_SAS_TOKEN_EXPIRY_HOURS=24 \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Restart frontend
+        run: kubectl rollout restart deployment frontend
+
       - name: Wait for frontend rollout
-        run: kubectl rollout status deployment/frontend --timeout=120s
+        run: kubectl rollout status deployment/frontend --timeout=180s

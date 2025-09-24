@@ -1,6 +1,5 @@
 resources:
   - configmap.yaml
-  - secrets.yaml
   - customer-db.yaml
   - product-db.yaml
   - order-db.yaml
