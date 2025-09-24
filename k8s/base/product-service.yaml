@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: product-service
-          image: sit722aklocalacr.azurecr.io/product_service:latest
+          image: product_service:latest
           ports:
             - containerPort: 8000
           env:

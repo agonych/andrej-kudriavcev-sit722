@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: sit722aklocalacr.azurecr.io/frontend:latest
+          image: frontend:latest
           ports:
             - containerPort: 80
           env:
