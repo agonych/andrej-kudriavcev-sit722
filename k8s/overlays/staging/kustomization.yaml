@@ -4,9 +4,6 @@ kind: Kustomization
 resources:
   - ../../base
 
-# Prefix all resources with staging-
-namePrefix: staging-
-
 # Image overrides (staging ACR)
 images:
   - name: product_service
