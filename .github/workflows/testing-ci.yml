@@ -160,7 +160,7 @@ jobs:
   terraform_apply:
     environment: Testing
     runs-on: ubuntu-latest
-    # needs: test_backends   # only run if tests succeed
+    needs: test_backends   # only run if tests succeed
 
     permissions:
       id-token: write
@@ -330,50 +330,6 @@ jobs:
           docker tag  $ACR_SERVER/frontend:$IMAGE_TAG $ACR_SERVER/frontend:staging-latest
           docker push $ACR_SERVER/frontend:$IMAGE_TAG
           docker push $ACR_SERVER/frontend:staging-latest
-    # Job 4: Deploy to AKS
-    deploy_to_staging:
-      environment: Testing
-      runs-on: ubuntu-latest
-      needs: [ terraform_apply, build_and_push_images ]
-
-      permissions:
-        id-token: write
-        contents: read
-
-      env:
-        ACR_SERVER: ${{ needs.terraform_apply.outputs.acr_server }}
-        AKS_RG: ${{ needs.terraform_apply.outputs.aks_rg }}
-        AKS_NAME: ${{ needs.terraform_apply.outputs.aks_name }}
-        IMAGE_TAG: ${{ github.sha }}
-
-      steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-
-        - name: Azure Login (OIDC)
-          uses: azure/login@v2
-          with:
-            client-id: ${{ secrets.AZURE_CLIENT_ID }}
-            tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-            subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-        - name: Get AKS Credentials
-          run: az aks get-credentials --resource-group "$AKS_RG" --name "$AKS_NAME" --overwrite-existing
-
-        # Patch kustomize images dynamically
-        - name: Update images with Kustomize
-          working-directory: k8s/overlays/staging
-          run: |
-            kustomize edit set image product_service=$ACR_SERVER/product_service:$IMAGE_TAG
-            kustomize edit set image order_service=$ACR_SERVER/order_service:$IMAGE_TAG
-            kustomize edit set image customer_service=$ACR_SERVER/customer_service:$IMAGE_TAG
-            kustomize edit set image frontend=$ACR_SERVER/frontend:$IMAGE_TAG
-
-        - name: Deploy with Kustomize
-          run: kubectl apply -k k8s/overlays/staging
-
-        - name: Wait for frontend rollout
-          run: kubectl rollout status deployment/frontend --timeout=120s
 
   # Job 4: Deploy to staging AKS
   deploy_to_staging:
