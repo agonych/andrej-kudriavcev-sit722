@@ -58,25 +58,26 @@ jobs:
         working-directory: terraform
         run: |
           set -e
-
+          TFVARS="-var-file=environments/staging.tfvars"
+          
           # Import Resource Group if exists
           if az group show -n sit722akstagerg >/dev/null 2>&1; then
-            terraform import azurerm_resource_group.rg /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg || true
+            terraform import $TFVARS azurerm_resource_group.rg /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg || true
           fi
-
+          
           # Import ACR if exists
           if az acr show -n sit722akstageacr >/dev/null 2>&1; then
-            terraform import azurerm_container_registry.acr /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg/providers/Microsoft.ContainerRegistry/registries/sit722akstageacr || true
+            terraform import $TFVARS azurerm_container_registry.acr /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg/providers/Microsoft.ContainerRegistry/registries/sit722akstageacr || true
           fi
-
+          
           # Import AKS if exists
           if az aks show -n sit722akstageaks -g sit722akstagerg >/dev/null 2>&1; then
-            terraform import azurerm_kubernetes_cluster.aks /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg/providers/Microsoft.ContainerService/managedClusters/sit722akstageaks || true
+            terraform import $TFVARS azurerm_kubernetes_cluster.aks /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg/providers/Microsoft.ContainerService/managedClusters/sit722akstageaks || true
           fi
-
+          
           # Import Storage Account if exists
           if az storage account show -n sit722akstagestorage -g sit722akstagerg >/dev/null 2>&1; then
-            terraform import azurerm_storage_account.storage /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg/providers/Microsoft.Storage/storageAccounts/sit722akstagestorage || true
+            terraform import $TFVARS azurerm_storage_account.storage /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg/providers/Microsoft.Storage/storageAccounts/sit722akstagestorage || true
           fi
 
       # Terraform Apply (auto-approve)
