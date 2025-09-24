@@ -6,6 +6,8 @@ on:
     paths:
       - "backend/**"
       - ".github/workflows/**"
+      - "terraform/**"
+      - "k8s/**"
 
 permissions:
   contents: read
