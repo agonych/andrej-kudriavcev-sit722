@@ -59,25 +59,43 @@ jobs:
         run: |
           set -e
           TFVARS="-var-file=environments/staging.tfvars"
-          
+          SUBS=${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          RG=sit722akstagerg
+          PREFIX=sit722akstage
+
           # Import Resource Group if exists
-          if az group show -n sit722akstagerg >/dev/null 2>&1; then
-            terraform import $TFVARS azurerm_resource_group.rg /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg || true
+          if az group show -n $RG >/dev/null 2>&1; then
+            terraform import $TFVARS azurerm_resource_group.rg /subscriptions/$SUBS/resourceGroups/$RG || true
           fi
-          
+
           # Import ACR if exists
-          if az acr show -n sit722akstageacr >/dev/null 2>&1; then
-            terraform import $TFVARS azurerm_container_registry.acr /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg/providers/Microsoft.ContainerRegistry/registries/sit722akstageacr || true
+          if az acr show -n ${PREFIX}acr >/dev/null 2>&1; then
+            terraform import $TFVARS azurerm_container_registry.acr /subscriptions/$SUBS/resourceGroups/$RG/providers/Microsoft.ContainerRegistry/registries/${PREFIX}acr || true
           fi
-          
+
           # Import AKS if exists
-          if az aks show -n sit722akstageaks -g sit722akstagerg >/dev/null 2>&1; then
-            terraform import $TFVARS azurerm_kubernetes_cluster.aks /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg/providers/Microsoft.ContainerService/managedClusters/sit722akstageaks || true
+          if az aks show -n ${PREFIX}aks -g $RG >/dev/null 2>&1; then
+            terraform import $TFVARS azurerm_kubernetes_cluster.aks /subscriptions/$SUBS/resourceGroups/$RG/providers/Microsoft.ContainerService/managedClusters/${PREFIX}aks || true
           fi
-          
+
           # Import Storage Account if exists
-          if az storage account show -n sit722akstagestorage -g sit722akstagerg >/dev/null 2>&1; then
-            terraform import $TFVARS azurerm_storage_account.storage /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/sit722akstagerg/providers/Microsoft.Storage/storageAccounts/sit722akstagestorage || true
+          if az storage account show -n ${PREFIX}storage -g $RG >/dev/null 2>&1; then
+            terraform import $TFVARS azurerm_storage_account.storage /subscriptions/$SUBS/resourceGroups/$RG/providers/Microsoft.Storage/storageAccounts/${PREFIX}storage || true
+          fi
+
+          # Import Storage Container if exists
+          if az storage container show --account-name ${PREFIX}storage --name images >/dev/null 2>&1; then
+            terraform import $TFVARS azurerm_storage_container.images /subscriptions/$SUBS/resourceGroups/$RG/providers/Microsoft.Storage/storageAccounts/${PREFIX}storage/blobServices/default/containers/images || true
+          fi
+
+          # Import ACR Pull Role Assignment if exists
+          ROLE_ID=$(az role assignment list \
+            --scope "/subscriptions/$SUBS/resourceGroups/$RG/providers/Microsoft.ContainerRegistry/registries/${PREFIX}acr" \
+            --role "AcrPull" \
+            --query "[0].id" -o tsv || true)
+
+          if [ -n "$ROLE_ID" ]; then
+            terraform import $TFVARS azurerm_role_assignment.acr_pull $ROLE_ID || true
           fi
 
       # Terraform Apply (auto-approve)
