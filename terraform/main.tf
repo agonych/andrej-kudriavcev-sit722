@@ -38,6 +38,12 @@ resource "azurerm_role_assignment" "acr_pull" {
   depends_on = [
     azurerm_kubernetes_cluster.aks
   ]
+
+  lifecycle {
+    ignore_changes = [
+      skip_service_principal_aad_check
+    ]
+  }
 }
 
 resource "azurerm_storage_account" "storage" {
