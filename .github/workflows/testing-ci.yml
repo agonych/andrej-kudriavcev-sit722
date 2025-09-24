@@ -14,6 +14,148 @@ permissions:
 
 jobs:
 
+  # Job 1: Run backend tests with ephemeral Postgres DBs and RabbitMQ
+  test_backends:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Ephemeral DBs + RabbitMQ for the test run
+    services:
+      product_db:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: products
+        ports: [ "5432:5432" ]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d products"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      order_db:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orders
+        ports: [ "5433:5432" ]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d orders"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      customer_db:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: customers
+        ports: [ "5434:5432" ]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d customers"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        ports:
+          - "5672:5672"
+          - "15672:15672"
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_port_connectivity"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('backend/**/requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install dependencies for all backends
+        run: |
+          pip install --upgrade pip
+          for req in backend/*/requirements.txt; do
+            echo "Installing $req"
+            pip install -r "$req"
+          done
+          pip install pytest httpx
+
+      # ---- Customer Service Tests ----
+      - name: Test customer_service
+        working-directory: backend/customer_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5434"
+          POSTGRES_DB: customers
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          # Safe dummy Azure vars so startup doesn't choke
+          AZURE_STORAGE_ACCOUNT_NAME: testaccount
+          AZURE_STORAGE_ACCOUNT_KEY: testkey
+          AZURE_STORAGE_CONTAINER_NAME: images
+          AZURE_SAS_TOKEN_EXPIRY_HOURS: "24"
+          # Rabbit (if code references it)
+          RABBITMQ_HOST: localhost
+          RABBITMQ_PORT: "5672"
+          RABBITMQ_USER: guest
+          RABBITMQ_PASS: guest
+        run: pytest -q
+
+      # ---- Product Service Tests ----
+      - name: Test product_service
+        working-directory: backend/product_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5432"
+          POSTGRES_DB: products
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          AZURE_STORAGE_ACCOUNT_NAME: testaccount
+          AZURE_STORAGE_ACCOUNT_KEY: testkey
+          AZURE_STORAGE_CONTAINER_NAME: images
+          AZURE_SAS_TOKEN_EXPIRY_HOURS: "24"
+          RABBITMQ_HOST: localhost
+          RABBITMQ_PORT: "5672"
+          RABBITMQ_USER: guest
+          RABBITMQ_PASS: guest
+        run: pytest -q
+
+      # ---- Order Service Tests ----
+      - name: Test order_service
+        working-directory: backend/order_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5433"
+          POSTGRES_DB: orders
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          # internal service URLs (if tests hit cross-service calls, keep them localhost or mock)
+          CUSTOMER_SERVICE_URL: http://localhost:9999
+          PRODUCT_SERVICE_URL: http://localhost:9998
+          RABBITMQ_HOST: localhost
+          RABBITMQ_PORT: "5672"
+          RABBITMQ_USER: guest
+          RABBITMQ_PASS: guest
+        run: pytest -q
+
+
   # Job 2: Provision infrastructure with Terraform
   terraform_apply:
     environment: Testing
@@ -188,3 +330,92 @@ jobs:
           docker tag  $ACR_SERVER/frontend:$IMAGE_TAG $ACR_SERVER/frontend:staging-latest
           docker push $ACR_SERVER/frontend:$IMAGE_TAG
           docker push $ACR_SERVER/frontend:staging-latest
+    # Job 4: Deploy to AKS
+    deploy_to_staging:
+      environment: Testing
+      runs-on: ubuntu-latest
+      needs: [ terraform_apply, build_and_push_images ]
+
+      permissions:
+        id-token: write
+        contents: read
+
+      env:
+        ACR_SERVER: ${{ needs.terraform_apply.outputs.acr_server }}
+        AKS_RG: ${{ needs.terraform_apply.outputs.aks_rg }}
+        AKS_NAME: ${{ needs.terraform_apply.outputs.aks_name }}
+        IMAGE_TAG: ${{ github.sha }}
+
+      steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+
+        - name: Azure Login (OIDC)
+          uses: azure/login@v2
+          with:
+            client-id: ${{ secrets.AZURE_CLIENT_ID }}
+            tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+            subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+        - name: Get AKS Credentials
+          run: az aks get-credentials --resource-group "$AKS_RG" --name "$AKS_NAME" --overwrite-existing
+
+        # Patch kustomize images dynamically
+        - name: Update images with Kustomize
+          working-directory: k8s/overlays/staging
+          run: |
+            kustomize edit set image product_service=$ACR_SERVER/product_service:$IMAGE_TAG
+            kustomize edit set image order_service=$ACR_SERVER/order_service:$IMAGE_TAG
+            kustomize edit set image customer_service=$ACR_SERVER/customer_service:$IMAGE_TAG
+            kustomize edit set image frontend=$ACR_SERVER/frontend:$IMAGE_TAG
+
+        - name: Deploy with Kustomize
+          run: kubectl apply -k k8s/overlays/staging
+
+        - name: Wait for frontend rollout
+          run: kubectl rollout status deployment/frontend --timeout=120s
+
+  # Job 4: Deploy to staging AKS
+  deploy_to_staging:
+    environment: Testing
+    runs-on: ubuntu-latest
+    needs: [terraform_apply, build_and_push_images]
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      ACR_SERVER: ${{ needs.terraform_apply.outputs.acr_server }}
+      AKS_RG: ${{ needs.terraform_apply.outputs.aks_rg }}
+      AKS_NAME: ${{ needs.terraform_apply.outputs.aks_name }}
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS Credentials
+        run: az aks get-credentials --resource-group "$AKS_RG" --name "$AKS_NAME" --overwrite-existing
+
+      # Patch kustomize images dynamically
+      - name: Update images with Kustomize
+        working-directory: k8s/overlays/staging
+        run: |
+          kustomize edit set image product_service=$ACR_SERVER/product_service:$IMAGE_TAG
+          kustomize edit set image order_service=$ACR_SERVER/order_service:$IMAGE_TAG
+          kustomize edit set image customer_service=$ACR_SERVER/customer_service:$IMAGE_TAG
+          kustomize edit set image frontend=$ACR_SERVER/frontend:$IMAGE_TAG
+
+      - name: Deploy with Kustomize
+        run: kubectl apply -k k8s/overlays/staging
+
+      - name: Wait for frontend rollout
+        run: kubectl rollout status deployment/frontend --timeout=120s
