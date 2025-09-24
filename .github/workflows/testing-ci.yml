@@ -153,6 +153,7 @@ jobs:
 
   # Job 2: Provision infrastructure with Terraform
   terraform_apply:
+    environment: Testing
     runs-on: ubuntu-latest
     needs: test_backends   # only run if tests succeed
 
@@ -188,26 +189,45 @@ jobs:
       - name: Terraform Apply
         working-directory: terraform
         run: terraform apply -auto-approve -var-file="environments/staging.tfvars"
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # Export outputs for later jobs (like storage account name & key, ACR server)
       - name: Capture Terraform Outputs
         id: tf_outputs
         working-directory: terraform
         run: |
-          echo "acr_server=$(terraform output -raw acr_login_server)" >> $GITHUB_OUTPUT
+          acr_server=$(terraform output -raw acr_login_server)
+          echo "acr_server=$acr_server" >> $GITHUB_OUTPUT
+          # Extract just the registry name before the first dot
+          acr_name=$(echo $acr_server | cut -d. -f1)
+          echo "acr_name=$acr_name" >> $GITHUB_OUTPUT
           echo "storage_account_name=$(terraform output -raw storage_account_name)" >> $GITHUB_OUTPUT
           echo "storage_account_key=$(terraform output -raw storage_account_key)" >> $GITHUB_OUTPUT
           echo "aks_rg=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
           echo "aks_name=$(terraform output -raw aks_name)" >> $GITHUB_OUTPUT
-          
+
+    outputs:
+      acr_server: ${{ steps.tf_outputs.outputs.acr_server }}
+      acr_name: ${{ steps.tf_outputs.outputs.acr_name }}
+      storage_account_name: ${{ steps.tf_outputs.outputs.storage_account_name }}
+      storage_account_key: ${{ steps.tf_outputs.outputs.storage_account_key }}
+      aks_rg: ${{ steps.tf_outputs.outputs.aks_rg }}
+      aks_name: ${{ steps.tf_outputs.outputs.aks_name }}
+
   # Job 3: Build & Push Images to ACR
   build_and_push_images:
+    environment: Testing
     runs-on: ubuntu-latest
     needs: terraform_apply   # only run if infra is ready
 
     env:
       IMAGE_TAG: ${{ github.sha }}
       ACR_SERVER: ${{ needs.terraform_apply.outputs.acr_server }}
+      ACR_NAME: ${{ needs.terraform_apply.outputs.acr_name }}
 
     steps:
       - name: Checkout repository
