@@ -272,11 +272,6 @@ jobs:
         working-directory: terraform/staging
         run: |
           echo "storage_account_name=$(terraform output -raw storage_account_name)" >> $GITHUB_OUTPUT
-          {
-              echo "storage_account_key<<EOF"
-              terraform output -raw storage_account_key
-              echo "EOF"
-          } >> "$GITHUB_OUTPUT"
           echo "aks_rg=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
           echo "aks_name=$(terraform output -raw aks_name)" >> $GITHUB_OUTPUT
 
@@ -302,7 +297,6 @@ jobs:
       AKS_RG: ${{ needs.terraform_apply.outputs.aks_rg }}
       AKS_NAME: ${{ needs.terraform_apply.outputs.aks_name }}
       STORAGE_ACCOUNT_NAME: ${{ needs.terraform_apply.outputs.storage_account_name }}
-      STORAGE_ACCOUNT_KEY: ${{ needs.terraform_apply.outputs.storage_account_key }}
 
     steps:
       - name: Debug storage key
@@ -332,6 +326,20 @@ jobs:
           kustomize edit set image customer_service=$ACR_SERVER/customer_service:$IMAGE_TAG
           kustomize edit set image frontend=$ACR_SERVER/frontend:$IMAGE_TAG
 
+      - name: Get storage account key from Azure
+        id: storage_key
+        run: |
+          set -euo pipefail
+          KEY=$(az storage account keys list \
+            --resource-group "$AKS_RG" \
+            --account-name "$STORAGE_ACCOUNT_NAME" \
+            --query '[0].value' -o tsv)
+          {
+            echo "STORAGE_KEY<<EOF"
+            echo "$KEY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create Kubernetes secrets
         run: |
           kubectl create secret generic global-secrets \
@@ -339,8 +347,8 @@ jobs:
             --from-literal=POSTGRES_PASSWORD=postgres \
             --from-literal=RABBITMQ_USER=guest \
             --from-literal=RABBITMQ_PASS=guest \
-            --from-literal=AZURE_STORAGE_ACCOUNT_NAME=${{ needs.terraform_apply.outputs.storage_account_name }} \
-            --from-literal=AZURE_STORAGE_ACCOUNT_KEY=${{ needs.terraform_apply.outputs.storage_account_key }} \
+            --from-literal=AZURE_STORAGE_ACCOUNT_NAME=$STORAGE_ACCOUNT_NAME \
+            --from-literal=AZURE_STORAGE_ACCOUNT_KEY=${{ steps.storage_key.outputs.STORAGE_KEY }} \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy with Kustomize
