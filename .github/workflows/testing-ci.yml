@@ -8,6 +8,7 @@ on:
       - ".github/workflows/**"
       - "terraform/**"
       - "k8s/**"
+      - "tests/**"
 
 permissions:
   contents: read
