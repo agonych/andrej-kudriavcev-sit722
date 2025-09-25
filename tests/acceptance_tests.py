@@ -1,8 +1,11 @@
 import os
 import sys
+import time
 import requests
 
+
 def check_health(base_url, service_name):
+    """Check /health endpoint of a service"""
     url = f"http://{base_url}/health"
     print(f"Checking {service_name} health at {url}")
     r = requests.get(url, timeout=10)
@@ -13,9 +16,28 @@ def check_health(base_url, service_name):
     print(f"✅ {service_name} health OK")
 
 
-def test_product_service(base_url):
-    check_health(base_url, "product-service")
+def wait_for_all_services(services, max_attempts=5, delay=10):
+    """
+    Retry health checks until all services report healthy.
+    services: list of (base_url, service_name) tuples
+    """
+    for attempt in range(1, max_attempts + 1):
+        try:
+            for base_url, service_name in services:
+                check_health(base_url, service_name)
+            print("🎉 All services healthy!")
+            return
+        except Exception as e:
+            print(f"⚠️ Attempt {attempt} failed: {e}")
+            if attempt < max_attempts:
+                print(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+            else:
+                print("❌ Services did not become healthy in time")
+                raise
 
+
+def test_product_service(base_url):
     # Create product
     product = {
         "name": "Test",
@@ -39,8 +61,6 @@ def test_product_service(base_url):
 
 
 def test_customer_service(base_url):
-    check_health(base_url, "customer-service")
-
     customer = {
         "email": "user@example.com",
         "first_name": "string",
@@ -62,8 +82,6 @@ def test_customer_service(base_url):
 
 
 def test_order_service(base_url):
-    check_health(base_url, "order-service")
-
     order = {
         "user_id": 1,
         "shipping_address": "string",
@@ -84,6 +102,7 @@ def test_frontend(base_url):
     url = f"http://{base_url}"
     print(f"Checking frontend at {url}")
     r = requests.get(url, timeout=10)
+    r.raise_for_status()
     assert r.status_code == 200
     print("✅ Frontend reachable")
 
@@ -95,6 +114,14 @@ if __name__ == "__main__":
         order_ip = os.environ["ORDER_IP"]
         frontend_ip = os.environ["FRONTEND_IP"]
 
+        # Step 1: Wait for all backends to be healthy
+        wait_for_all_services([
+            (f"{product_ip}:8000", "product-service"),
+            (f"{customer_ip}:8002", "customer-service"),
+            (f"{order_ip}:8001", "order-service")
+        ])
+
+        # Step 2: Run functional tests
         test_product_service(f"{product_ip}:8000")
         test_customer_service(f"{customer_ip}:8002")
         test_order_service(f"{order_ip}:8001")
