@@ -210,9 +210,10 @@ __marimo__/
 
 .idea
 
-terraform/.terraform
-terraform/terraform.tfstate
-terraform/terraform.tfstate.backup
-terraform/.terraform.lock.hcl
-/terraform/environments/local.tfvars
-/k8s/base/secrets.yaml
+/terraform/*/terraform.tfvars
+/terraform/*/.terraform
+/terraform/*/.terraform.lock.hcl
+/terraform/*/.terraform.tfstate.lock.info
+/terraform/*/.terraform.tfstate
+/terraform/*/crash.log
+/terraform/*/

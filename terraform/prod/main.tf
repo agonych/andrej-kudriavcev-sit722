@@ -1,8 +1,10 @@
+# Create Prod Resource Group
 resource "azurerm_resource_group" "rg" {
   name     = "${var.prefix}rg"
   location = var.location
 }
 
+# Create Prod ACR
 resource "azurerm_container_registry" "acr" {
   name                = "${var.prefix}acr"
   resource_group_name = azurerm_resource_group.rg.name
@@ -11,6 +13,7 @@ resource "azurerm_container_registry" "acr" {
   admin_enabled       = false
 }
 
+# Create Prod AKS cluster
 resource "azurerm_kubernetes_cluster" "aks" {
   name                = "${var.prefix}aks"
   location            = azurerm_resource_group.rg.location
@@ -28,13 +31,9 @@ resource "azurerm_kubernetes_cluster" "aks" {
     type = "SystemAssigned"
   }
 
-  lifecycle {
-    ignore_changes = [
-      default_node_pool[0].upgrade_settings,
-    ]
-  }
 }
 
+# Allow prod AKS to pull images from prod ACR
 resource "azurerm_role_assignment" "acr_pull" {
   principal_id                     = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
   role_definition_name             = "AcrPull"
@@ -52,6 +51,7 @@ resource "azurerm_role_assignment" "acr_pull" {
   }
 }
 
+# Create Prod storage account
 resource "azurerm_storage_account" "storage" {
   name                     = "${var.prefix}storage"
   resource_group_name      = azurerm_resource_group.rg.name
@@ -60,9 +60,15 @@ resource "azurerm_storage_account" "storage" {
   account_replication_type = "LRS"
 }
 
+# Create a container in the storage account
 resource "azurerm_storage_container" "images" {
   name                     = "images"
   storage_account_id       = azurerm_storage_account.storage.id
   container_access_type    = "blob"
 }
 
+resource "azurerm_storage_container" "tfstate" {
+  name                     = "tfstate"
+  storage_account_id       = azurerm_storage_account.storage.id
+  container_access_type    = "private"
+}

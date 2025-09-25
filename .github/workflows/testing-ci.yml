@@ -155,21 +155,79 @@ jobs:
           RABBITMQ_PASS: guest
         run: pytest -q
 
-
-  # Job 2: Provision infrastructure with Terraform
-  terraform_apply:
-    environment: Testing
+  # Job 2: Build & Push Images to PROD ACR
+  build_and_push_images:
+    environment: Production
     runs-on: ubuntu-latest
-    needs: test_backends   # only run if tests succeed
+    needs: test_backends
 
     permissions:
       id-token: write
       contents: read
 
     env:
-      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      IMAGE_TAG: ${{ github.sha }}
+      PROD_ACR_NAME: ${{ secrets.AZURE_ACR_NAME }}
+      PROD_ACR_SERVER: ${{ secrets.AZURE_ACR_NAME }}.azurecr.io
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Login to Azure (OIDC)
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Login to ACR
+      - name: ACR login
+        run: az acr login --name "$PROD_ACR_NAME"
+
+      # Build and push Product Service
+      - name: Build & Push product_service
+        run: |
+          docker build -t $PROD_ACR_SERVER/product_service:$IMAGE_TAG ./backend/product_service
+          docker tag  $PROD_ACR_SERVER/product_service:$IMAGE_TAG $PROD_ACR_SERVER/product_service:staging-latest
+          docker push $PROD_ACR_SERVER/product_service:$IMAGE_TAG
+          docker push $PROD_ACR_SERVER/product_service:staging-latest
+
+      # Build and push Order Service
+      - name: Build & Push order_service
+        run: |
+          docker build -t $PROD_ACR_SERVER/order_service:$IMAGE_TAG ./backend/order_service
+          docker tag  $PROD_ACR_SERVER/order_service:$IMAGE_TAG $PROD_ACR_SERVER/order_service:staging-latest
+          docker push $PROD_ACR_SERVER/order_service:$IMAGE_TAG
+          docker push $PROD_ACR_SERVER/order_service:staging-latest
+
+      # Build and push Customer Service
+      - name: Build & Push customer_service
+        run: |
+          docker build -t $PROD_ACR_SERVER/customer_service:$IMAGE_TAG ./backend/customer_service
+          docker tag  $PROD_ACR_SERVER/customer_service:$IMAGE_TAG $PROD_ACR_SERVER/customer_service:staging-latest
+          docker push $PROD_ACR_SERVER/customer_service:$IMAGE_TAG
+          docker push $PROD_ACR_SERVER/customer_service:staging-latest
+
+      # Build and push Frontend
+      - name: Build & Push frontend
+        run: |
+          docker build -t $PROD_ACR_SERVER/frontend:$IMAGE_TAG ./frontend
+          docker tag  $PROD_ACR_SERVER/frontend:$IMAGE_TAG $PROD_ACR_SERVER/frontend:staging-latest
+          docker push $PROD_ACR_SERVER/frontend:$IMAGE_TAG
+          docker push $PROD_ACR_SERVER/frontend:staging-latest
+
+
+  # Job 3: Provision staging infrastructure with Terraform
+  terraform_apply:
+    environment: Testing
+    runs-on: ubuntu-latest
+    needs: build_and_push_images
+
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       # Checkout repo
@@ -192,160 +250,47 @@ jobs:
 
       # Terraform Init
       - name: Terraform Init
-        working-directory: terraform
+        working-directory: terraform/staging
         run: terraform init
-
-      # Import existing resources (if any)
-      - name: Terraform Import Existing Resources (if needed)
-        working-directory: terraform
-        run: |
-          set -e
-          TFVARS="-var-file=environments/staging.tfvars"
-          SUBS=${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          RG=sit722akstagerg
-          PREFIX=sit722akstage
-
-          # Import Resource Group if exists
-          if az group show -n $RG >/dev/null 2>&1; then
-            terraform import $TFVARS azurerm_resource_group.rg /subscriptions/$SUBS/resourceGroups/$RG || true
-          fi
-
-          # Import ACR if exists
-          if az acr show -n ${PREFIX}acr >/dev/null 2>&1; then
-            terraform import $TFVARS azurerm_container_registry.acr /subscriptions/$SUBS/resourceGroups/$RG/providers/Microsoft.ContainerRegistry/registries/${PREFIX}acr || true
-          fi
-
-          # Import AKS if exists
-          if az aks show -n ${PREFIX}aks -g $RG >/dev/null 2>&1; then
-            terraform import $TFVARS azurerm_kubernetes_cluster.aks /subscriptions/$SUBS/resourceGroups/$RG/providers/Microsoft.ContainerService/managedClusters/${PREFIX}aks || true
-          fi
-
-          # Import Storage Account if exists
-          if az storage account show -n ${PREFIX}storage -g $RG >/dev/null 2>&1; then
-            terraform import $TFVARS azurerm_storage_account.storage /subscriptions/$SUBS/resourceGroups/$RG/providers/Microsoft.Storage/storageAccounts/${PREFIX}storage || true
-          fi
-
-          # Import Storage Container if exists
-          if az storage container show --account-name ${PREFIX}storage --name images >/dev/null 2>&1; then
-            terraform import $TFVARS azurerm_storage_container.images /subscriptions/$SUBS/resourceGroups/$RG/providers/Microsoft.Storage/storageAccounts/${PREFIX}storage/blobServices/default/containers/images || true
-          fi
-
-          # Import ACR Pull Role Assignment if exists
-          ROLE_ID=$(az role assignment list \
-            --scope "/subscriptions/$SUBS/resourceGroups/$RG/providers/Microsoft.ContainerRegistry/registries/${PREFIX}acr" \
-            --role "AcrPull" \
-            --query "[0].id" -o tsv || true)
-
-          if [ -n "$ROLE_ID" ]; then
-            terraform import $TFVARS azurerm_role_assignment.acr_pull $ROLE_ID || true
-          fi
 
       # Terraform Apply (auto-approve)
       - name: Terraform Apply
-        working-directory: terraform
-        run: terraform apply -auto-approve -var-file="environments/staging.tfvars"
+        working-directory: terraform/staging
+        run: terraform apply -auto-approve
 
       # Export outputs for later jobs (like storage account name & key, ACR server)
       - name: Capture Terraform Outputs
         id: tf_outputs
-        working-directory: terraform
+        working-directory: terraform/staging
         run: |
-          acr_server=$(terraform output -raw acr_login_server)
-          echo "acr_server=$acr_server" >> $GITHUB_OUTPUT
-          # Extract just the registry name before the first dot
-          acr_name=$(echo $acr_server | cut -d. -f1)
-          echo "acr_name=$acr_name" >> $GITHUB_OUTPUT
           echo "storage_account_name=$(terraform output -raw storage_account_name)" >> $GITHUB_OUTPUT
           echo "storage_account_key=$(terraform output -raw storage_account_key)" >> $GITHUB_OUTPUT
           echo "aks_rg=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
           echo "aks_name=$(terraform output -raw aks_name)" >> $GITHUB_OUTPUT
 
     outputs:
-      acr_server: ${{ steps.tf_outputs.outputs.acr_server }}
-      acr_name: ${{ steps.tf_outputs.outputs.acr_name }}
       storage_account_name: ${{ steps.tf_outputs.outputs.storage_account_name }}
       storage_account_key: ${{ steps.tf_outputs.outputs.storage_account_key }}
       aks_rg: ${{ steps.tf_outputs.outputs.aks_rg }}
       aks_name: ${{ steps.tf_outputs.outputs.aks_name }}
 
-  # Job 3: Build & Push Images to ACR
-  build_and_push_images:
-    environment: Testing
-    runs-on: ubuntu-latest
-    needs: terraform_apply   # only run if infra is ready
-
-    permissions:
-      id-token: write
-      contents: read
-
-    env:
-      IMAGE_TAG: ${{ github.sha }}
-      ACR_SERVER: ${{ needs.terraform_apply.outputs.acr_server }}
-      ACR_NAME: ${{ needs.terraform_apply.outputs.acr_name }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # Login to Azure (OIDC)
-      - name: Azure Login (OIDC)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      # Login to ACR
-      - name: ACR login
-        run: az acr login --name "$ACR_NAME"
-
-      # Build and push Product Service
-      - name: Build & Push product_service
-        run: |
-          docker build -t $ACR_SERVER/product_service:$IMAGE_TAG ./backend/product_service
-          docker tag  $ACR_SERVER/product_service:$IMAGE_TAG $ACR_SERVER/product_service:staging-latest
-          docker push $ACR_SERVER/product_service:$IMAGE_TAG
-          docker push $ACR_SERVER/product_service:staging-latest
-
-      # Build and push Order Service
-      - name: Build & Push order_service
-        run: |
-          docker build -t $ACR_SERVER/order_service:$IMAGE_TAG ./backend/order_service
-          docker tag  $ACR_SERVER/order_service:$IMAGE_TAG $ACR_SERVER/order_service:staging-latest
-          docker push $ACR_SERVER/order_service:$IMAGE_TAG
-          docker push $ACR_SERVER/order_service:staging-latest
-
-      # Build and push Customer Service
-      - name: Build & Push customer_service
-        run: |
-          docker build -t $ACR_SERVER/customer_service:$IMAGE_TAG ./backend/customer_service
-          docker tag  $ACR_SERVER/customer_service:$IMAGE_TAG $ACR_SERVER/customer_service:staging-latest
-          docker push $ACR_SERVER/customer_service:$IMAGE_TAG
-          docker push $ACR_SERVER/customer_service:staging-latest
-
-      # Build and push Frontend
-      - name: Build & Push frontend
-        run: |
-          docker build -t $ACR_SERVER/frontend:$IMAGE_TAG ./frontend
-          docker tag  $ACR_SERVER/frontend:$IMAGE_TAG $ACR_SERVER/frontend:staging-latest
-          docker push $ACR_SERVER/frontend:$IMAGE_TAG
-          docker push $ACR_SERVER/frontend:staging-latest
-
   # Job 4: Deploy to staging AKS
   deploy_to_staging:
     environment: Testing
     runs-on: ubuntu-latest
-    needs: [terraform_apply, build_and_push_images]
+    needs: terraform_apply
 
     permissions:
       id-token: write
       contents: read
 
     env:
-      ACR_SERVER: ${{ needs.terraform_apply.outputs.acr_server }}
+      ACR_SERVER: ${{ secrets.AZURE_ACR_NAME }}.azurecr.io
+      IMAGE_TAG: ${{ github.sha }}
       AKS_RG: ${{ needs.terraform_apply.outputs.aks_rg }}
       AKS_NAME: ${{ needs.terraform_apply.outputs.aks_name }}
-      IMAGE_TAG: ${{ github.sha }}
+      STORAGE_ACCOUNT_NAME: ${{ needs.terraform_apply.outputs.storage_account_name }}
+      STORAGE_ACCOUNT_KEY: ${{ needs.terraform_apply.outputs.storage_account_key }}
 
     steps:
       - name: Checkout repository
@@ -377,8 +322,8 @@ jobs:
             --from-literal=POSTGRES_PASSWORD=postgres \
             --from-literal=RABBITMQ_USER=guest \
             --from-literal=RABBITMQ_PASS=guest \
-            --from-literal=AZURE_STORAGE_ACCOUNT_NAME=${{ needs.terraform_apply.outputs.storage_account_name }} \
-            --from-literal=AZURE_STORAGE_ACCOUNT_KEY=${{ needs.terraform_apply.outputs.storage_account_key }} \
+            --from-literal=AZURE_STORAGE_ACCOUNT_NAME=$STORAGE_ACCOUNT_NAME \
+            --from-literal=AZURE_STORAGE_ACCOUNT_KEY=$STORAGE_ACCOUNT_KEY \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy with Kustomize
@@ -430,3 +375,37 @@ jobs:
 
       - name: Wait for frontend rollout
         run: kubectl rollout status deployment/frontend --timeout=180s
+
+  # Job 5: Cleanup staging environment
+  cleanup_staging:
+    if: ${{ always() }}   # ensures it runs even if previous jobs failed
+    runs-on: ubuntu-latest
+    needs: deploy_to_staging
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.7
+
+      - name: Terraform Init
+        working-directory: terraform/staging
+        run: terraform init
+
+      - name: Terraform Destroy
+        working-directory: terraform/staging
+        run: terraform destroy -auto-approve
