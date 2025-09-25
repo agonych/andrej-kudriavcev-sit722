@@ -300,6 +300,11 @@ jobs:
       STORAGE_ACCOUNT_KEY: ${{ needs.terraform_apply.outputs.storage_account_key }}
 
     steps:
+      - name: Debug storage key
+        run: |
+          echo "Key length: ${#STORAGE_ACCOUNT_KEY}"
+          echo "Starts with: ${STORAGE_ACCOUNT_KEY:0:5}..."
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -329,8 +334,8 @@ jobs:
             --from-literal=POSTGRES_PASSWORD=postgres \
             --from-literal=RABBITMQ_USER=guest \
             --from-literal=RABBITMQ_PASS=guest \
-            --from-literal=AZURE_STORAGE_ACCOUNT_NAME=$STORAGE_ACCOUNT_NAME \
-            --from-literal=AZURE_STORAGE_ACCOUNT_KEY=$STORAGE_ACCOUNT_KEY \
+            --from-literal=AZURE_STORAGE_ACCOUNT_NAME=${{ needs.terraform_apply.outputs.storage_account_name }} \
+            --from-literal=AZURE_STORAGE_ACCOUNT_KEY=${{ needs.terraform_apply.outputs.storage_account_key }} \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy with Kustomize
