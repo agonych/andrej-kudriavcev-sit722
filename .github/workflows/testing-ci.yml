@@ -16,7 +16,6 @@ jobs:
 
   # Job 1: Run backend tests with ephemeral Postgres DBs and RabbitMQ
   test_backends:
-    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -160,7 +159,7 @@ jobs:
   build_and_push_images:
     environment: Production
     runs-on: ubuntu-latest
-    #needs: test_backends
+    needs: test_backends
 
     permissions:
       id-token: write
@@ -437,9 +436,10 @@ jobs:
         run: |
           python tests/acceptance_tests.py
 
+
   # Job 5: Cleanup staging environment
   cleanup_staging:
-    if: false # ${{ always() }}   # ensures it runs even if previous jobs failed
+    if: ${{ always() }} # ensures it runs even if previous jobs failed
     runs-on: ubuntu-latest
     needs: deploy_to_staging
 
