@@ -271,7 +271,7 @@ jobs:
         working-directory: terraform/staging
         run: |
           echo "storage_account_name=$(terraform output -raw storage_account_name)" >> $GITHUB_OUTPUT
-          echo "storage_account_key=$(terraform output -json | jq -r '.storage_account_key.value')" >> $GITHUB_OUTPUT
+          echo "storage_account_key=$(terraform output -raw storage_account_key)" >> $GITHUB_OUTPUT
           echo "aks_rg=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
           echo "aks_name=$(terraform output -raw aks_name)" >> $GITHUB_OUTPUT
 
