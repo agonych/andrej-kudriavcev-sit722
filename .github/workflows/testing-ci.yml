@@ -375,6 +375,13 @@ jobs:
             if [ -n "$ip" ]; then echo "Found IP: $ip"; echo "CUSTOMER_IP=$ip" >> $GITHUB_ENV; break; fi
             sleep 10
           done
+          
+          echo "Waiting for frontend external IP..."
+          for i in {1..30}; do
+            ip=$(kubectl get svc frontend -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$ip" ]; then echo "Found IP: $ip"; echo "FRONTEND_IP=$ip" >> $GITHUB_ENV; break; fi
+            sleep 10
+          done
 
       - name: Update frontend configmap
         run: |
