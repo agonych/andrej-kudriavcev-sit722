@@ -61,17 +61,6 @@ jobs:
           --health-timeout 5s
           --health-retries 20
 
-      rabbitmq:
-        image: rabbitmq:3-management-alpine
-        ports:
-          - "5672:5672"
-          - "15672:15672"
-        options: >-
-          --health-cmd "rabbitmq-diagnostics -q check_port_connectivity"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,13 +78,15 @@ jobs:
           restore-keys: |
             pip-${{ runner.os }}-
 
-      - name: Install dependencies for all backends
-        run: |
+      - name: Install dependencies
+        run: | # Use a multi-line script to install pip dependencies
           pip install --upgrade pip
+          # Loop through each backend service folder
           for req in backend/*/requirements.txt; do
             echo "Installing $req"
             pip install -r "$req"
           done
+          # Install CI tools
           pip install pytest httpx
 
       # ---- Customer Service Tests ----
@@ -107,17 +98,8 @@ jobs:
           POSTGRES_DB: customers
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          # Safe dummy Azure vars so startup doesn't choke
-          AZURE_STORAGE_ACCOUNT_NAME: testaccount
-          AZURE_STORAGE_ACCOUNT_KEY: testkey
-          AZURE_STORAGE_CONTAINER_NAME: images
-          AZURE_SAS_TOKEN_EXPIRY_HOURS: "24"
-          # Rabbit (if code references it)
-          RABBITMQ_HOST: localhost
-          RABBITMQ_PORT: "5672"
-          RABBITMQ_USER: guest
-          RABBITMQ_PASS: guest
-        run: pytest -q
+        run: |
+          pytest tests --maxfail=1 --disable-warnings -q
 
       # ---- Product Service Tests ----
       - name: Test product_service
@@ -128,15 +110,8 @@ jobs:
           POSTGRES_DB: products
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          AZURE_STORAGE_ACCOUNT_NAME: testaccount
-          AZURE_STORAGE_ACCOUNT_KEY: testkey
-          AZURE_STORAGE_CONTAINER_NAME: images
-          AZURE_SAS_TOKEN_EXPIRY_HOURS: "24"
-          RABBITMQ_HOST: localhost
-          RABBITMQ_PORT: "5672"
-          RABBITMQ_USER: guest
-          RABBITMQ_PASS: guest
-        run: pytest -q
+        run: |
+          pytest tests --maxfail=1 --disable-warnings -q
 
       # ---- Order Service Tests ----
       - name: Test order_service
@@ -147,14 +122,8 @@ jobs:
           POSTGRES_DB: orders
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          # internal service URLs (if tests hit cross-service calls, keep them localhost or mock)
-          CUSTOMER_SERVICE_URL: http://localhost:9999
-          PRODUCT_SERVICE_URL: http://localhost:9998
-          RABBITMQ_HOST: localhost
-          RABBITMQ_PORT: "5672"
-          RABBITMQ_USER: guest
-          RABBITMQ_PASS: guest
-        run: pytest -q
+        run: |
+          pytest tests --maxfail=1 --disable-warnings -q
 
   # Job 2: Build & Push Images to PROD ACR
   build_and_push_images:
@@ -219,8 +188,6 @@ jobs:
           docker push $PROD_ACR_SERVER/frontend:$IMAGE_TAG
           docker push $PROD_ACR_SERVER/frontend:staging-latest
 
-
-
   # Job 3: Provision staging infrastructure with Terraform
   terraform_apply:
     environment: Testing
@@ -277,7 +244,6 @@ jobs:
 
     outputs:
       storage_account_name: ${{ steps.tf_outputs.outputs.storage_account_name }}
-      storage_account_key: ${{ steps.tf_outputs.outputs.storage_account_key }}
       aks_rg: ${{ steps.tf_outputs.outputs.aks_rg }}
       aks_name: ${{ steps.tf_outputs.outputs.aks_name }}
 
@@ -436,7 +402,6 @@ jobs:
       - name: Run acceptance tests
         run: |
           python tests/acceptance_tests.py
-
 
   # Job 5: Cleanup staging environment
   cleanup_staging:
