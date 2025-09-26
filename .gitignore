@@ -216,3 +216,5 @@ __marimo__/
 /terraform/*/terraform.tfstate
 /terraform/*/terraform.tfstate.backup
 /terraform/*/crash.log
+/terraform/*/.terraform.tfstate.lock.info
+/k8s/base/secrets.yaml
