@@ -8,7 +8,7 @@ resources:
 images:
   - name: product_service
     newName: sit722akprodacr.azurecr.io/product_service
-    newTag: latest # GitHub Actions should replace with $GITHUB_SHA
+    newTag: latest 
   - name: order_service
     newName: sit722akprodacr.azurecr.io/order_service
     newTag: latest
