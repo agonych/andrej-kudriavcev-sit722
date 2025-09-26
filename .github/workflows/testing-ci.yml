@@ -5,6 +5,7 @@ on:
     branches: [ testing ]
     paths:
       - "backend/**"
+      - "frontend/**"
       - ".github/workflows/**"
       - "terraform/**"
       - "k8s/**"

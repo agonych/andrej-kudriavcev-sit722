@@ -3,7 +3,13 @@ name: CI/CD Production Pipeline
 on:
   push:
     branches: [ main ]
-
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - ".github/workflows/**"
+      - "terraform/**"
+      - "k8s/**"
+      - "tests/**"
 jobs:
   build_and_push_prod_images:
     environment: Production
