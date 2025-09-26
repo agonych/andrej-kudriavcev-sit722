@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  product_service:
+    volumes:
+      - ./backend/product_service/app:/code/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  order_service:
+    volumes:
+      - ./backend/order_service/app:/code/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  customer_service:
+    volumes:
+      - ./backend/customer_service/app:/code/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    volumes:
+      - ./frontend:/usr/share/nginx/html

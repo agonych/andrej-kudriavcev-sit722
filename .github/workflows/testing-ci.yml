@@ -1,0 +1,480 @@
+name: CI/CD Testing Pipeline
+
+on:
+  push:
+    branches: [ testing ]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - ".github/workflows/**"
+      - "terraform/**"
+      - "k8s/**"
+      - "tests/**"
+
+permissions:
+  contents: read
+
+jobs:
+
+  # Job 1: Run backend tests with ephemeral Postgres DBs and RabbitMQ
+  test_backends:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Ephemeral DBs + RabbitMQ for the test run
+    services:
+      product_db:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: products
+        ports: [ "5432:5432" ]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d products"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      order_db:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orders
+        ports: [ "5433:5432" ]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d orders"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      customer_db:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: customers
+        ports: [ "5434:5432" ]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d customers"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        ports:
+          - "5672:5672"
+          - "15672:15672"
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_port_connectivity"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('backend/**/requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install dependencies for all backends
+        run: |
+          pip install --upgrade pip
+          for req in backend/*/requirements.txt; do
+            echo "Installing $req"
+            pip install -r "$req"
+          done
+          pip install pytest httpx
+
+      # ---- Customer Service Tests ----
+      - name: Test customer_service
+        working-directory: backend/customer_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5434"
+          POSTGRES_DB: customers
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          # Safe dummy Azure vars so startup doesn't choke
+          AZURE_STORAGE_ACCOUNT_NAME: testaccount
+          AZURE_STORAGE_ACCOUNT_KEY: testkey
+          AZURE_STORAGE_CONTAINER_NAME: images
+          AZURE_SAS_TOKEN_EXPIRY_HOURS: "24"
+          # Rabbit (if code references it)
+          RABBITMQ_HOST: localhost
+          RABBITMQ_PORT: "5672"
+          RABBITMQ_USER: guest
+          RABBITMQ_PASS: guest
+        run: pytest -q
+
+      # ---- Product Service Tests ----
+      - name: Test product_service
+        working-directory: backend/product_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5432"
+          POSTGRES_DB: products
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          AZURE_STORAGE_ACCOUNT_NAME: testaccount
+          AZURE_STORAGE_ACCOUNT_KEY: testkey
+          AZURE_STORAGE_CONTAINER_NAME: images
+          AZURE_SAS_TOKEN_EXPIRY_HOURS: "24"
+          RABBITMQ_HOST: localhost
+          RABBITMQ_PORT: "5672"
+          RABBITMQ_USER: guest
+          RABBITMQ_PASS: guest
+        run: pytest -q
+
+      # ---- Order Service Tests ----
+      - name: Test order_service
+        working-directory: backend/order_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5433"
+          POSTGRES_DB: orders
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          # internal service URLs (if tests hit cross-service calls, keep them localhost or mock)
+          CUSTOMER_SERVICE_URL: http://localhost:9999
+          PRODUCT_SERVICE_URL: http://localhost:9998
+          RABBITMQ_HOST: localhost
+          RABBITMQ_PORT: "5672"
+          RABBITMQ_USER: guest
+          RABBITMQ_PASS: guest
+        run: pytest -q
+
+  # Job 2: Build & Push Images to PROD ACR
+  build_and_push_images:
+    environment: Production
+    runs-on: ubuntu-latest
+    needs: test_backends
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+      PROD_ACR_NAME: ${{ secrets.AZURE_ACR_NAME }}
+      PROD_ACR_SERVER: ${{ secrets.AZURE_ACR_NAME }}.azurecr.io
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Login to Azure (OIDC)
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Login to ACR
+      - name: ACR login
+        run: az acr login --name "$PROD_ACR_NAME"
+
+      # Build and push Product Service
+      - name: Build & Push product_service
+        run: |
+          docker build -t $PROD_ACR_SERVER/product_service:$IMAGE_TAG ./backend/product_service
+          docker tag  $PROD_ACR_SERVER/product_service:$IMAGE_TAG $PROD_ACR_SERVER/product_service:staging-latest
+          docker push $PROD_ACR_SERVER/product_service:$IMAGE_TAG
+          docker push $PROD_ACR_SERVER/product_service:staging-latest
+
+      # Build and push Order Service
+      - name: Build & Push order_service
+        run: |
+          docker build -t $PROD_ACR_SERVER/order_service:$IMAGE_TAG ./backend/order_service
+          docker tag  $PROD_ACR_SERVER/order_service:$IMAGE_TAG $PROD_ACR_SERVER/order_service:staging-latest
+          docker push $PROD_ACR_SERVER/order_service:$IMAGE_TAG
+          docker push $PROD_ACR_SERVER/order_service:staging-latest
+
+      # Build and push Customer Service
+      - name: Build & Push customer_service
+        run: |
+          docker build -t $PROD_ACR_SERVER/customer_service:$IMAGE_TAG ./backend/customer_service
+          docker tag  $PROD_ACR_SERVER/customer_service:$IMAGE_TAG $PROD_ACR_SERVER/customer_service:staging-latest
+          docker push $PROD_ACR_SERVER/customer_service:$IMAGE_TAG
+          docker push $PROD_ACR_SERVER/customer_service:staging-latest
+
+      # Build and push Frontend
+      - name: Build & Push frontend
+        run: |
+          docker build -t $PROD_ACR_SERVER/frontend:$IMAGE_TAG ./frontend
+          docker tag  $PROD_ACR_SERVER/frontend:$IMAGE_TAG $PROD_ACR_SERVER/frontend:staging-latest
+          docker push $PROD_ACR_SERVER/frontend:$IMAGE_TAG
+          docker push $PROD_ACR_SERVER/frontend:staging-latest
+
+
+
+  # Job 3: Provision staging infrastructure with Terraform
+  terraform_apply:
+    environment: Testing
+    runs-on: ubuntu-latest
+    needs: build_and_push_images
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    steps:
+      # Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Setup Terraform CLI
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.7   # match your local version
+
+      # Azure login with OIDC
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Terraform Init
+      - name: Terraform Init
+        working-directory: terraform/staging
+        run: terraform init
+
+      # Terraform Apply (auto-approve)
+      - name: Terraform Apply
+        working-directory: terraform/staging
+        run: terraform apply -auto-approve
+
+      # Export outputs for later jobs (like storage account name & key, ACR server)
+      - name: Capture Terraform Outputs
+        id: tf_outputs
+        working-directory: terraform/staging
+        run: |
+          echo "storage_account_name=$(terraform output -raw storage_account_name)" >> $GITHUB_OUTPUT
+          echo "aks_rg=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
+          echo "aks_name=$(terraform output -raw aks_name)" >> $GITHUB_OUTPUT
+
+    outputs:
+      storage_account_name: ${{ steps.tf_outputs.outputs.storage_account_name }}
+      storage_account_key: ${{ steps.tf_outputs.outputs.storage_account_key }}
+      aks_rg: ${{ steps.tf_outputs.outputs.aks_rg }}
+      aks_name: ${{ steps.tf_outputs.outputs.aks_name }}
+
+  # Job 4: Deploy to staging AKS
+  deploy_to_staging:
+    environment: Testing
+    runs-on: ubuntu-latest
+    needs: terraform_apply
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      ACR_SERVER: ${{ secrets.AZURE_ACR_NAME }}.azurecr.io
+      IMAGE_TAG: ${{ github.sha }}
+      AKS_RG: ${{ needs.terraform_apply.outputs.aks_rg }}
+      AKS_NAME: ${{ needs.terraform_apply.outputs.aks_name }}
+      STORAGE_ACCOUNT_NAME: ${{ needs.terraform_apply.outputs.storage_account_name }}
+
+    steps:
+      - name: Debug storage key
+        run: |
+          echo "Key length: ${#STORAGE_ACCOUNT_KEY}"
+          echo "Starts with: ${STORAGE_ACCOUNT_KEY:0:5}..."
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS Credentials
+        run: az aks get-credentials --resource-group "$AKS_RG" --name "$AKS_NAME" --overwrite-existing
+
+      # Patch kustomize images dynamically
+      - name: Update images with Kustomize
+        working-directory: k8s/overlays/staging
+        run: |
+          kustomize edit set image product_service=$ACR_SERVER/product_service:$IMAGE_TAG
+          kustomize edit set image order_service=$ACR_SERVER/order_service:$IMAGE_TAG
+          kustomize edit set image customer_service=$ACR_SERVER/customer_service:$IMAGE_TAG
+          kustomize edit set image frontend=$ACR_SERVER/frontend:$IMAGE_TAG
+
+      - name: Get storage account key from Azure
+        id: storage_key
+        run: |
+          set -euo pipefail
+          KEY=$(az storage account keys list \
+            --resource-group "$AKS_RG" \
+            --account-name "$STORAGE_ACCOUNT_NAME" \
+            --query '[0].value' -o tsv)
+          {
+            echo "STORAGE_KEY<<EOF"
+            echo "$KEY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create Kubernetes secrets
+        run: |
+          kubectl create secret generic global-secrets \
+            --from-literal=POSTGRES_USER=postgres \
+            --from-literal=POSTGRES_PASSWORD=postgres \
+            --from-literal=RABBITMQ_USER=guest \
+            --from-literal=RABBITMQ_PASS=guest \
+            --from-literal=AZURE_STORAGE_ACCOUNT_NAME=$STORAGE_ACCOUNT_NAME \
+            --from-literal=AZURE_STORAGE_ACCOUNT_KEY=${{ steps.storage_key.outputs.STORAGE_KEY }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy with Kustomize
+        run: kubectl apply -k k8s/overlays/staging
+
+      - name: Wait for external IPs
+        run: |
+          echo "Waiting for product-service external IP..."
+          for i in {1..30}; do
+            ip=$(kubectl get svc product-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$ip" ]; then echo "Found IP: $ip"; echo "PRODUCT_IP=$ip" >> $GITHUB_ENV; break; fi
+            sleep 10
+          done
+
+          echo "Waiting for order-service external IP..."
+          for i in {1..30}; do
+            ip=$(kubectl get svc order-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$ip" ]; then echo "Found IP: $ip"; echo "ORDER_IP=$ip" >> $GITHUB_ENV; break; fi
+            sleep 10
+          done
+
+          echo "Waiting for customer-service external IP..."
+          for i in {1..30}; do
+            ip=$(kubectl get svc customer-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$ip" ]; then echo "Found IP: $ip"; echo "CUSTOMER_IP=$ip" >> $GITHUB_ENV; break; fi
+            sleep 10
+          done
+          
+          echo "Waiting for frontend external IP..."
+          for i in {1..30}; do
+            ip=$(kubectl get svc frontend -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$ip" ]; then echo "Found IP: $ip"; echo "FRONTEND_IP=$ip" >> $GITHUB_ENV; break; fi
+            sleep 10
+          done
+
+      - name: Update frontend configmap
+        run: |
+          kubectl create configmap global-config \
+            --from-literal=PRODUCT_SERVICE_PUBLIC_URL=http://$PRODUCT_IP:8000 \
+            --from-literal=ORDER_SERVICE_PUBLIC_URL=http://$ORDER_IP:8001 \
+            --from-literal=CUSTOMER_SERVICE_PUBLIC_URL=http://$CUSTOMER_IP:8002 \
+            --from-literal=PRODUCT_SERVICE_URL=http://product-service:8000 \
+            --from-literal=ORDER_SERVICE_URL=http://order-service:8001 \
+            --from-literal=CUSTOMER_SERVICE_URL=http://customer-service:8002 \
+            --from-literal=RABBITMQ_HOST=rabbitmq \
+            --from-literal=RABBITMQ_PORT=5672 \
+            --from-literal=PRODUCT_DB_HOST=product-db \
+            --from-literal=PRODUCT_DB_NAME=products \
+            --from-literal=CUSTOMER_DB_HOST=customer-db \
+            --from-literal=CUSTOMER_DB_NAME=customers \
+            --from-literal=ORDER_DB_HOST=order-db \
+            --from-literal=ORDER_DB_NAME=orders \
+            --from-literal=AZURE_STORAGE_CONTAINER_NAME=images \
+            --from-literal=AZURE_SAS_TOKEN_EXPIRY_HOURS=24 \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Restart frontend
+        run: kubectl rollout restart deployment frontend
+
+      - name: Wait for frontend rollout
+        run: kubectl rollout status deployment/frontend --timeout=180s
+
+      - name: Wait for services to become operational
+        run: |
+          check_service() {
+            local name=$1
+            local url=$2
+            echo "Checking $name at $url"
+            for i in {1..30}; do
+              if curl -s --max-time 5 "$url/health" | grep -q '"status":'; then
+                echo "$name is up!"
+                return 0
+              fi
+              echo "$name not ready yet... retrying ($i/30)"
+              sleep 10
+            done
+            echo "❌ $name did not become ready in time"
+            exit 1
+          }
+          
+          check_service "product-service"   "http://$PRODUCT_IP:8000"
+          check_service "order-service"     "http://$ORDER_IP:8001"
+          check_service "customer-service"  "http://$CUSTOMER_IP:8002"
+
+      - name: Run acceptance tests
+        run: |
+          python tests/acceptance_tests.py
+
+
+  # Job 5: Cleanup staging environment
+  cleanup_staging:
+    if: ${{ always() }} # ensures it runs even if previous jobs failed
+    runs-on: ubuntu-latest
+    needs: deploy_to_staging
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.7
+
+      - name: Terraform Init
+        working-directory: terraform/staging
+        run: terraform init
+
+      - name: Terraform Destroy
+        working-directory: terraform/staging
+        run: terraform destroy -auto-approve
